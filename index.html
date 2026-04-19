@@ -1,0 +1,1557 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESCAPE THE OFFICE · 逃生·办公室</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #000;
+            overflow: hidden;
+            font-family: 'Georgia', serif;
+            cursor: none;
+        }
+        #game-container {
+            width: 100vw;
+            height: 100vh;
+        }
+        /* 自定义鼠标光标 - 设计风格画笔 */
+        #design-cursor {
+            position: fixed;
+            width: 48px;
+            height: 48px;
+            z-index: 99999;
+            pointer-events: none;
+            transform: translate(-50%, -50%);
+            transition: transform 0.06s ease-out;
+        }
+        #crosshair { display: none; }
+        #crosshair::before, #crosshair::after {
+            content: '';
+            position: absolute;
+            background: rgba(255,255,255,0.8);
+        }
+        #crosshair::before {
+            width: 2px;
+            height: 20px;
+            left: 9px;
+            top: 0;
+        }
+        #crosshair::after {
+            width: 20px;
+            height: 2px;
+            top: 9px;
+            left: 0;
+        }
+        #hud {
+            position: fixed;
+            bottom: 30px;
+            left: 30px;
+            color: #fff;
+            z-index: 100;
+            font-size: 14px;
+            letter-spacing: 2px;
+        }
+        #hud div {
+            margin: 8px 0;
+            opacity: 0.8;
+        }
+        #hp-bar {
+            width: 150px;
+            height: 8px;
+            background: #333;
+            border: 1px solid #666;
+        }
+        #hp-fill {
+            height: 100%;
+            background: #aa2222;
+            transition: width 0.2s;
+        }
+        #title-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: #000;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        #title-screen h1 {
+            color: #fff;
+            font-size: 36px;
+            font-weight: 100;
+            letter-spacing: 8px;
+            margin-bottom: 20px;
+        }
+        #title-screen p {
+            color: #666;
+            font-size: 14px;
+            letter-spacing: 4px;
+            margin-bottom: 50px;
+        }
+        #start-btn {
+            color: #888;
+            font-size: 12px;
+            letter-spacing: 3px;
+            cursor: pointer;
+            padding: 15px 40px;
+            border: 1px solid #444;
+            background: transparent;
+        }
+        #start-btn:hover {
+            color: #fff;
+            border-color: #fff;
+        }
+        .controls-hint {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            color: #555;
+            font-size: 11px;
+            letter-spacing: 1px;
+            z-index: 100;
+            line-height: 2;
+        }
+        #damage-flash {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: #aa2222;
+            opacity: 0;
+            pointer-events: none;
+            z-index: 90;
+            transition: opacity 0.1s;
+        }
+    </style>
+</head>
+<body>
+    <div id="title-screen">
+        <h1>ESCAPE THE OFFICE</h1>
+        <p>逃生 · 办公室</p>
+        <div id="start-btn">CLICK TO START</div>
+    </div>
+    
+    <div id="game-container"></div>
+    <div id="crosshair"></div>
+    <div id="damage-flash"></div>
+    
+    <!-- 打工人鼠标光标 -->
+    <div id="design-cursor">
+        <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+            <path d="M10 4L10 28L16 22L22 30L26 28L20 20L28 20L10 4Z" fill="#ffffff" stroke="#cccccc" stroke-width="1"/>
+            <path d="M10 4L10 28L16 22L22 30L26 28L20 20L28 20L10 4Z" fill="url(#grad1)" opacity="0.9"/>
+            <defs>
+                <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" style="stop-color:#ffffff;stop-opacity:1" />
+                    <stop offset="100%" style="stop-color:#dddddd;stop-opacity:1" />
+                </linearGradient>
+            </defs>
+        </svg>
+    </div>
+    
+    <div id="hud">
+        <div>HP</div>
+        <div id="hp-bar"><div id="hp-fill" style="width: 100%"></div></div>
+        <div id="timer">ESCAPE IN: 30s</div>
+        <div id="score">SCORE: 0</div>
+    </div>
+    
+    <div class="controls-hint" id="controls-hint" style="display:none">
+        A / D - 左右躲避<br>
+        鼠标左键 - 射击辞职信<br>
+        人物自动向前奔跑
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
+    <script>
+        let scene, camera, renderer, clock;
+        let player = { hp: 100, maxHp: 100, x: 0, y: 1.7, z: 0, speed: 0.18, shootCD: 0 };
+        let keys = {};
+        let obstacles = [];
+        let bullets = [];
+        let popups = [];
+        let gameState = { phase: 'menu', time: 0, score: 0 };
+        let officeCorridor = [];
+        
+        const DAMAGE = 20;
+
+        let audioCtx, bgmOsc, bgmGain, noiseNode;
+        
+        function playHeartbeat() {
+            if (!audioCtx) return;
+            // 心跳咚咚声 - 防爆音
+            function beat() {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sine';
+                osc.frequency.value = 65;
+                gain.gain.setValueAtTime(0, audioCtx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.1, audioCtx.currentTime + 0.01);
+                gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.15);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+            }
+            beat();
+            setTimeout(beat, 180);
+        }
+        
+        function initAudio() {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            audioCtx = new AudioContext();
+            
+            // 开场动画心跳
+            playHeartbeat();
+            setTimeout(() => playHeartbeat(), 1200);
+            setTimeout(() => playHeartbeat(), 2600);
+            
+            startBGM();
+        }
+        
+        function startBGM() {
+            // 纯净钢琴旋律 - 绝对零底噪
+            const melody = [87.31, 110, 130.81, 110, 98, 130.81, 146.83, 110];
+            let noteIdx = 0;
+            
+            function playCleanPiano(freq) {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'triangle';
+                osc.frequency.value = freq;
+                
+                // 钢琴ADSR包络 - 绝对干净
+                gain.gain.setValueAtTime(0, audioCtx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.05, audioCtx.currentTime + 0.03);
+                gain.gain.setValueAtTime(0.035, audioCtx.currentTime + 0.15);
+                gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 2.5);
+                
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 3);
+            }
+            
+            // 只弹纯净钢琴音 - 没有任何其他噪音
+            setInterval(() => {
+                if (gameState.phase === 'playing' || gameState.phase === 'intro') {
+                    playCleanPiano(melody[noteIdx % melody.length]);
+                    noteIdx++;
+                    // 30%概率弹一个和声
+                    if (Math.random() < 0.3) {
+                        setTimeout(() => {
+                            playCleanPiano(melody[(noteIdx + 3) % melody.length] * 0.5);
+                        }, 150);
+                    }
+                }
+            }, 2200 + Math.random() * 1000);
+        }
+        
+        function playShootSound() {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.value = 440;
+            
+            // 防爆音：从0开始淡入
+            gain.gain.setValueAtTime(0, audioCtx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.06, audioCtx.currentTime + 0.01);
+            gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.08);
+            
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.1);
+        }
+        
+        function playExplosionSound() {
+            if (!audioCtx) return;
+            // 三角波，绝对无电流声
+            for (let i = 0; i < 2; i++) {
+                setTimeout(() => {
+                    const osc = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+                    osc.type = 'triangle';
+                    osc.frequency.value = 150 - i * 40;
+                    gain.gain.setValueAtTime(0, audioCtx.currentTime);
+                    gain.gain.linearRampToValueAtTime(0.08 - i * 0.025, audioCtx.currentTime + 0.015);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.2);
+                    osc.connect(gain);
+                    gain.connect(audioCtx.destination);
+                    osc.start();
+                }, i * 25);
+            }
+        }
+        
+        function playHurtSound() {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.value = 100;
+            gain.gain.setValueAtTime(0, audioCtx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.1, audioCtx.currentTime + 0.01);
+            gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.2);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+        }
+        
+        function playWinChord() {
+            if (!audioCtx) return;
+            const chord = [261.63, 329.63, 392, 523.25]; // C大三和弦 天国之声
+            chord.forEach((freq, i) => {
+                setTimeout(() => {
+                    const osc = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.value = freq;
+                    gain.gain.setValueAtTime(0, audioCtx.currentTime);
+                    gain.gain.linearRampToValueAtTime(0.08, audioCtx.currentTime + 0.15);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 4);
+                    osc.connect(gain);
+                    gain.connect(audioCtx.destination);
+                    osc.start();
+                    osc.stop(audioCtx.currentTime + 4.5);
+                }, i * 150);
+            });
+            // 琶音循环
+            setTimeout(() => {
+                const arp = [329.63, 392, 523.25, 659.25];
+                arp.forEach((freq, i) => {
+                    setTimeout(() => {
+                        const osc = audioCtx.createOscillator();
+                        const gain = audioCtx.createGain();
+                        osc.type = 'sine';
+                        osc.frequency.value = freq;
+                        gain.gain.setValueAtTime(0, audioCtx.currentTime);
+                        gain.gain.linearRampToValueAtTime(0.05, audioCtx.currentTime + 0.05);
+                        gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 1.5);
+                        osc.connect(gain);
+                        gain.connect(audioCtx.destination);
+                        osc.start();
+                    }, i * 180);
+                });
+            }, 800);
+        }
+        
+        window.playSound = function(freq, dur, vol = 0.2) {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.value = freq;
+            // 所有音效从0开始，防止爆音咔哒声
+            gain.gain.setValueAtTime(0, audioCtx.currentTime);
+            gain.gain.linearRampToValueAtTime(vol, audioCtx.currentTime + 0.01);
+            gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + dur);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + dur + 0.01);
+        };
+
+        function init3D() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x121012);
+            scene.fog = new THREE.Fog(0x121012, 8, 70);
+            
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.getElementById('game-container').appendChild(renderer.domElement);
+            
+            clock = new THREE.Clock();
+            
+            // 环境光
+            const ambient = new THREE.AmbientLight(0x2a2525, 0.7);
+            scene.add(ambient);
+            
+            buildOffice();
+            
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+        
+        function buildOffice() {
+            // 超长地板 (300米)
+            const floorGeo = new THREE.PlaneGeometry(8, 300);
+            const floorMat = new THREE.MeshStandardMaterial({ color: 0x1a1818 });
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.rotation.x = -Math.PI / 2;
+            floor.position.z = -145;
+            floor.receiveShadow = true;
+            scene.add(floor);
+            
+            // 墙壁 (300米)
+            const wallMat = new THREE.MeshStandardMaterial({ color: 0x151218 });
+            
+            const leftWall = new THREE.Mesh(new THREE.BoxGeometry(0.3, 3, 300), wallMat);
+            leftWall.position.set(-4.15, 1.5, -145);
+            scene.add(leftWall);
+            
+            const rightWall = new THREE.Mesh(new THREE.BoxGeometry(0.3, 3, 300), wallMat);
+            rightWall.position.set(4.15, 1.5, -145);
+            scene.add(rightWall);
+            
+            // 天花板 (300米)
+            const ceiling = new THREE.Mesh(new THREE.BoxGeometry(8, 0.2, 300), wallMat);
+            ceiling.position.set(0, 3.1, -145);
+            scene.add(ceiling);
+            
+            // 格子间隔板 + 荧光灯 (35组，覆盖整个走廊)
+            for (let i = 0; i < 35; i++) {
+                const z = -i * 8 - 4;
+                
+                // 隔板
+                const panel = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.1, 1.6, 2.5),
+                    new THREE.MeshStandardMaterial({ color: 0x1a2030 })
+                );
+                panel.position.set(-2.8, 1, z);
+                scene.add(panel);
+                
+                const panel2 = panel.clone();
+                panel2.position.x = 2.8;
+                scene.add(panel2);
+                
+                // 工位电脑屏幕光
+                const monitorLight = new THREE.PointLight(0x0088ff, 0.3, 4);
+                monitorLight.position.set(0, 1.3, z);
+                scene.add(monitorLight);
+                
+                // 天花板荧光灯
+                const lightGeo = new THREE.BoxGeometry(3, 0.08, 0.3);
+                const lightMat = new THREE.MeshBasicMaterial({ color: 0x00ddff });
+                const light = new THREE.Mesh(lightGeo, lightMat);
+                light.position.set(0, 2.9, z);
+                scene.add(light);
+                
+                const bulb = new THREE.PointLight(0x88ddff, 0.8, 15);
+                bulb.position.set(0, 2.7, z);
+                scene.add(bulb);
+                
+                officeCorridor.push({ panel, panel2, monitorLight, light, bulb });
+            }
+            
+            // 经典棕色公文包（第一人称视角）
+            const bagGroup = new THREE.Group();
+            const bagBody = new THREE.Mesh(
+                new THREE.BoxGeometry(0.32, 0.28, 0.45),
+                new THREE.MeshStandardMaterial({ 
+                    color: 0x704214, 
+                    roughness: 0.6,
+                    metalness: 0.1
+                })
+            );
+            bagGroup.add(bagBody);
+            
+            // 包盖
+            const bagLid = new THREE.Mesh(
+                new THREE.BoxGeometry(0.34, 0.04, 0.48),
+                new THREE.MeshStandardMaterial({ 
+                    color: 0x8b5a2b, 
+                    roughness: 0.5
+                })
+            );
+            bagLid.position.y = 0.15;
+            bagGroup.add(bagLid);
+            
+            // 金属锁扣
+            const lock = new THREE.Mesh(
+                new THREE.BoxGeometry(0.08, 0.06, 0.05),
+                new THREE.MeshStandardMaterial({ 
+                    color: 0xd4af37,
+                    metalness: 0.9,
+                    roughness: 0.2
+                })
+            );
+            lock.position.set(0, 0.13, -0.2);
+            bagGroup.add(lock);
+            
+            bagGroup.position.set(0.35, -0.3, -0.6);
+            camera.add(bagGroup);
+            scene.add(camera);
+            
+            // 出口传送门 - 30秒后才出现 (天堂白光之门)
+            window.portalGate = { frame: null, portal: null, core: null, light: null, spawned: false };
+            
+            window.portalGate.frame = new THREE.Mesh(
+                new THREE.BoxGeometry(5.2, 3.8, 0.4),
+                new THREE.MeshStandardMaterial({ 
+                    color: 0xeeeeee,
+                    emissive: 0xffffff,
+                    emissiveIntensity: 0
+                })
+            );
+            window.portalGate.frame.position.set(0, 1.7, -280); // 后移35米！
+            window.portalGate.frame.visible = false;
+            
+            // 白光传送门
+            const portalMat = new THREE.MeshBasicMaterial({ 
+                color: 0xffffff, 
+                transparent: true, 
+                opacity: 0 
+            });
+            window.portalGate.portal = new THREE.Mesh(
+                new THREE.BoxGeometry(3.2, 2.8, 0.1),
+                portalMat
+            );
+            window.portalGate.portal.position.set(0, 1.7, -279.8);
+            
+            // 核心强光
+            window.portalGate.core = new THREE.Mesh(
+                new THREE.SphereGeometry(0.5, 16, 16),
+                new THREE.MeshBasicMaterial({ 
+                    color: 0xffffff, 
+                    transparent: true, 
+                    opacity: 0 
+                })
+            );
+            window.portalGate.core.position.set(0, 1.7, -279);
+            
+            window.portalGate.light = new THREE.PointLight(0xffffff, 0, 35);
+            window.portalGate.light.position.set(0, 1.7, -277);
+            
+            scene.add(window.portalGate.frame);
+            scene.add(window.portalGate.portal);
+            scene.add(window.portalGate.core);
+            scene.add(window.portalGate.light);
+        }
+        
+        function createCutscene(callback) {
+            let frame = 0;
+            const black = document.createElement('div');
+            black.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;background:#000;z-index:1500';
+            document.body.appendChild(black);
+            
+            const text = document.createElement('div');
+            text.style.cssText = `
+                position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+                color:#ccc;font:15px Georgia;letter-spacing:2px;line-height:28px;
+                text-align:center;z-index:1600;opacity:0;transition:opacity 0.8s;
+            `;
+            document.body.appendChild(text);
+            
+            const scenes = [
+                '2:47 AM',
+                '连续加班第17天',
+                '大楼里的人都走光了',
+                '灯，一盏，一盏，灭了',
+                '只有你的屏幕，还亮着',
+                '然后，你听到了走廊的声音...',
+                'R U N .'
+            ];
+            
+            let sceneIdx = 0;
+            const anim = setInterval(() => {
+                frame++;
+                
+                if (frame === 60 + sceneIdx * 120) {
+                    text.textContent = scenes[sceneIdx];
+                    text.style.opacity = '0.9';
+                    sceneIdx++;
+                }
+                
+                if (frame === 110 + (sceneIdx - 1) * 120 && sceneIdx > 0) {
+                    text.style.opacity = '0';
+                }
+                
+                if (sceneIdx >= scenes.length && frame >= 60 + scenes.length * 120) {
+                    clearInterval(anim);
+                    let fadeOut = setInterval(() => {
+                        black.style.opacity = parseFloat(black.style.opacity || 1) - 0.02;
+                        if (parseFloat(black.style.opacity) <= 0) {
+                            clearInterval(fadeOut);
+                            document.body.removeChild(black);
+                            document.body.removeChild(text);
+                            callback();
+                        }
+                    }, 30);
+                }
+            }, 16);
+            
+            black.addEventListener('click', () => {
+                clearInterval(anim);
+                document.body.removeChild(black);
+                document.body.removeChild(text);
+                callback();
+            });
+        }
+        
+        function spawnObstacle() {
+            if (obstacles.length >= 4 || gameState.phase !== 'playing') return;
+            
+            const type = Math.random();
+            const z = player.z - 20;
+            const x = (Math.random() - 0.5) * 5.2; // 障碍物全屏生成，不留死角！
+            
+            let obs;
+            
+            if (type < 0.22) {
+                // 1. 💬 企业微信聊天图标
+                obs = new THREE.Group();
+                const bubble = new THREE.Mesh(
+                    new THREE.BoxGeometry(1, 0.8, 0.15),
+                    new THREE.MeshStandardMaterial({ 
+                        color: 0x00dd00, emissive: 0x00ff00, emissiveIntensity: 0.7
+                    })
+                );
+                obs.add(bubble);
+                const tail = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.25, 0.25, 0.1),
+                    new THREE.MeshBasicMaterial({ color: 0x00dd00 })
+                );
+                tail.position.set(-0.35, -0.5, 0);
+                tail.rotation.z = 0.4;
+                obs.add(tail);
+                // 红色未读消息角标
+                const badge = new THREE.Mesh(
+                    new THREE.CircleGeometry(0.18, 16),
+                    new THREE.MeshBasicMaterial({ color: 0xff0000 })
+                );
+                badge.position.set(0.4, 0.3, 0.1);
+                obs.add(badge);
+                obs.add(new THREE.PointLight(0x00ff00, 0.9, 7));
+                obs.position.set(x, 1.8, z);
+                obs.type = 'chat';
+                // 滴滴滴消息提示音
+                playSound(880, 0.08, 0.08);
+                setTimeout(() => playSound(988, 0.08, 0.08), 70);
+                setTimeout(() => playSound(1100, 0.1, 0.08), 140);
+            } else if (type < 0.44) {
+                // 2. 📈 KPI疯涨绩效曲线表
+                obs = new THREE.Group();
+                const board = new THREE.Mesh(
+                    new THREE.BoxGeometry(1.2, 1, 0.08),
+                    new THREE.MeshStandardMaterial({ 
+                        color: 0xffffff, emissive: 0xffeeee, emissiveIntensity: 0.3
+                    })
+                );
+                obs.add(board);
+                
+                // 红色上升曲线
+                const curvePoints = [];
+                for (let i = 0; i < 10; i++) {
+                    const px = -0.45 + i * 0.1;
+                    const py = -0.3 + Math.pow(i / 9, 1.8) * 0.7 + (Math.random() - 0.5) * 0.1;
+                    const line = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.12, 0.08, 0.05),
+                        new THREE.MeshBasicMaterial({ color: 0xff0000 })
+                    );
+                    line.position.set(px, py, 0.05);
+                    curvePoints.push(line);
+                    obs.add(line);
+                }
+                
+                // 向上的箭头
+                const arrow = new THREE.Mesh(
+                    new THREE.ConeGeometry(0.15, 0.25, 8),
+                    new THREE.MeshBasicMaterial({ color: 0xff0000 })
+                );
+                arrow.position.set(0.4, 0.35, 0.05);
+                arrow.rotation.z = 0.2;
+                obs.add(arrow);
+                
+                // "KPI"文字
+                for (let i = 0; i < 3; i++) {
+                    const dot = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.08, 0.08, 0.04),
+                        new THREE.MeshBasicMaterial({ color: 0xdd0000 })
+                    );
+                    dot.position.set(-0.35 + i * 0.12, -0.35, 0.05);
+                    obs.add(dot);
+                }
+                
+                obs.add(new THREE.PointLight(0xff2222, 0.9, 6));
+                obs.position.set(x, 1.7, z);
+                obs.type = 'review';
+            } else if (type < 0.66) {
+                // 3. 会议邀请邮件
+                obs = new THREE.Group();
+                const mail = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.5, 0.35, 0.12),
+                    new THREE.MeshStandardMaterial({ 
+                        color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.3
+                    })
+                );
+                obs.add(mail);
+                const mark = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.1, 0.1, 0.02),
+                    new THREE.MeshBasicMaterial({ color: 0xff0000 })
+                );
+                mark.position.set(0.12, 0.05, 0.07);
+                obs.add(mark);
+                obs.add(new THREE.PointLight(0xff2222, 0.7, 5));
+                obs.position.set(x, 1.6, z);
+                obs.type = 'meeting';
+            } else if (type < 0.82) {
+                // 4. ⏰ 巨大悬浮倒计时时钟
+                obs = new THREE.Group();
+                const clockFrame = new THREE.Mesh(
+                    new THREE.TorusGeometry(1.5, 0.12, 8, 32),
+                    new THREE.MeshStandardMaterial({ 
+                        color: 0x440000, emissive: 0xff0000, emissiveIntensity: 0.8
+                    })
+                );
+                obs.add(clockFrame);
+                for (let i = 0; i < 12; i++) {
+                    const tick = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.08, 0.25, 0.1),
+                        new THREE.MeshBasicMaterial({ color: 0xff4444 })
+                    );
+                    const ang = (i / 12) * Math.PI * 2;
+                    tick.position.set(Math.sin(ang) * 1.2, Math.cos(ang) * 1.2, 0);
+                    tick.rotation.z = -ang;
+                    obs.add(tick);
+                }
+                const hand1 = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.08, 1, 0.05),
+                    new THREE.MeshBasicMaterial({ color: 0xff0000 })
+                );
+                hand1.position.y = 0.5;
+                const hand2 = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.06, 0.7, 0.05),
+                    new THREE.MeshBasicMaterial({ color: 0xff2222 })
+                );
+                hand2.position.y = 0.35;
+                obs.add(hand1, hand2);
+                obs.clockHands = [hand1, hand2];
+                obs.add(new THREE.PointLight(0xff0000, 1.2, 10));
+                obs.position.set(x, 2.8, z);
+                obs.scale.setScalar(1.4);
+                obs.type = 'clock';
+            } else if (type < 0.82) {
+                // 5. 📂 飞速旋转邮件夹 - 喷射广告弹窗
+                obs = new THREE.Group();
+                const folder = new THREE.Mesh(
+                    new THREE.BoxGeometry(1.2, 0.8, 0.4),
+                    new THREE.MeshStandardMaterial({ 
+                        color: 0xffff66, emissive: 0xffaa00, emissiveIntensity: 0.5
+                    })
+                );
+                obs.add(folder);
+                const tab = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.5, 0.2, 0.05),
+                    new THREE.MeshBasicMaterial({ color: 0xff6600 })
+                );
+                tab.position.set(0, 0.45, 0);
+                obs.add(tab);
+                obs.add(new THREE.PointLight(0xffaa00, 0.9, 7));
+                obs.position.set(x, 2, z);
+                obs.type = 'spamFolder';
+                obs.spamCD = 0;
+            } else if (type < 0.75) {
+                // 4. ⏰ 巨大悬浮倒计时时钟
+                obs = new THREE.Group();
+                const clockFrame = new THREE.Mesh(
+                    new THREE.TorusGeometry(1.5, 0.12, 8, 32),
+                    new THREE.MeshStandardMaterial({ 
+                        color: 0x440000, emissive: 0xff0000, emissiveIntensity: 0.8
+                    })
+                );
+                obs.add(clockFrame);
+                for (let i = 0; i < 12; i++) {
+                    const tick = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.08, 0.25, 0.1),
+                        new THREE.MeshBasicMaterial({ color: 0xff4444 })
+                    );
+                    const ang = (i / 12) * Math.PI * 2;
+                    tick.position.set(Math.sin(ang) * 1.2, Math.cos(ang) * 1.2, 0);
+                    tick.rotation.z = -ang;
+                    obs.add(tick);
+                }
+                const hand1 = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.08, 1, 0.05),
+                    new THREE.MeshBasicMaterial({ color: 0xff0000 })
+                );
+                hand1.position.y = 0.5;
+                const hand2 = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.06, 0.7, 0.05),
+                    new THREE.MeshBasicMaterial({ color: 0xff2222 })
+                );
+                hand2.position.y = 0.35;
+                obs.add(hand1, hand2);
+                obs.clockHands = [hand1, hand2];
+                obs.add(new THREE.PointLight(0xff0000, 1.2, 10));
+                obs.position.set(x, 2.8, z);
+                obs.scale.setScalar(1.4);
+                obs.type = 'clock';
+                // 滴答滴答秒针音效
+                const tickTock = setInterval(() => {
+                    if (gameState.phase === 'playing' && obs.position.z < player.z + 10) {
+                        playSound(1400 + Math.random() * 200, 0.04, 0.06);
+                    }
+                    if (obs.position.z > player.z + 10) clearInterval(tickTock);
+                }, 250);
+            } else {
+                // 5. 📂 狂暴邮件夹 - 海量广告弹窗攻击！
+                obs = new THREE.Group();
+                const folder = new THREE.Mesh(
+                    new THREE.BoxGeometry(1.6, 1.1, 0.55),
+                    new THREE.MeshStandardMaterial({ 
+                        color: 0xffff22, emissive: 0xffcc00, emissiveIntensity: 1.0
+                    })
+                );
+                obs.add(folder);
+                const tab = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.7, 0.28, 0.08),
+                    new THREE.MeshBasicMaterial({ color: 0xff6600 })
+                );
+                tab.position.set(0, 0.6, 0);
+                obs.add(tab);
+                obs.add(new THREE.PointLight(0xffaa00, 1.5, 10));
+                obs.position.set(x, 2.3, z);
+                obs.scale.setScalar(1.5);
+                obs.type = 'spamFolder';
+                obs.spamCD = 0;
+            }
+            
+            obstacles.push(obs);
+            scene.add(obs);
+        }
+        
+        function spawnAdPopup(folderPos) {
+            const popup = new THREE.Group();
+            // 巨型弹窗！完全遮挡视线！
+            const sizes = [2.8, 3.2, 3.6];
+            const size = sizes[Math.floor(Math.random() * 3)];
+            const bg = new THREE.Mesh(
+                new THREE.BoxGeometry(size, size * 0.75, 0.08),
+                new THREE.MeshStandardMaterial({ 
+                    color: 0xffffff, emissive: 0xffffaa, emissiveIntensity: 0.9
+                })
+            );
+            popup.add(bg);
+            const titleBar = new THREE.Mesh(
+                new THREE.BoxGeometry(size, 0.32, 0.1),
+                new THREE.MeshBasicMaterial({ color: [0x0066ff, 0xff0000, 0x008800][Math.floor(Math.random() * 3)] })
+            );
+            titleBar.position.y = size * 0.75 / 2 - 0.16;
+            popup.add(titleBar);
+            const xBtn = new THREE.Mesh(
+                new THREE.BoxGeometry(0.25, 0.25, 0.12),
+                new THREE.MeshBasicMaterial({ color: 0xff0000 })
+            );
+            xBtn.position.set(size / 2 - 0.15, size * 0.75 / 2 - 0.16, 0);
+            popup.add(xBtn);
+            
+            // 更多虚假内容线条
+            const textColors = [0xff0000, 0x008800, 0xff8800, 0x0000ff];
+            for (let i = 0; i < 5; i++) {
+                const line = new THREE.Mesh(
+                    new THREE.BoxGeometry(size * 0.7, 0.15, 0.08),
+                    new THREE.MeshBasicMaterial({ color: textColors[i % 4] })
+                );
+                line.position.set(0, size * 0.15 - i * 0.3, 0);
+                popup.add(line);
+            }
+            
+            popup.position.set(
+                folderPos.x + (Math.random() - 0.5) * 5,
+                folderPos.y - 0.5 + (Math.random() - 0.5) * 2,
+                folderPos.z + 2 + Math.random() * 6
+            );
+            popup.life = 300;
+            popup.vz = 0.26;
+            popup.rotation.z = (Math.random() - 0.5) * 0.4; // 弹窗歪歪扭扭
+            
+            popups.push(popup);
+            scene.add(popup);
+        }
+        
+        function playerShoot() {
+            if (player.shootCD > 0) return;
+            player.shootCD = 12;
+            
+            // 白色信封样式辞职信
+            const envelope = new THREE.Group();
+            
+            // 信封主体
+            const body = new THREE.Mesh(
+                new THREE.BoxGeometry(0.2, 0.02, 0.14),
+                new THREE.MeshStandardMaterial({ 
+                    color: 0xffffff,
+                    roughness: 0.9
+                })
+            );
+            envelope.add(body);
+            
+            // 信封翻盖
+            const flap = new THREE.Mesh(
+                new THREE.BoxGeometry(0.2, 0.01, 0.07),
+                new THREE.MeshStandardMaterial({ 
+                    color: 0xfffff0,
+                    roughness: 0.85
+                })
+            );
+            flap.rotation.x = 0.4;
+            flap.position.set(0, 0.015, -0.05);
+            envelope.add(flap);
+            
+            // 红色火漆封印
+            const seal = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.025, 0.03, 0.02, 16),
+                new THREE.MeshStandardMaterial({ 
+                    color: 0xdd0000,
+                    roughness: 0.4
+                })
+            );
+            seal.rotation.x = Math.PI / 2;
+            seal.position.set(0, 0.015, 0.05);
+            envelope.add(seal);
+            
+            envelope.position.set(player.x, player.y - 0.1, player.z - 1);
+            envelope.rotation.y = (Math.random() - 0.5) * 0.3;
+            envelope.vz = -0.6;
+            envelope.life = 80;
+            
+            bullets.push(envelope);
+            scene.add(envelope);
+            playShootSound();
+        }
+        
+        function playerTakeDamage() {
+            player.hp -= DAMAGE;
+            document.getElementById('hp-fill').style.width = Math.max(0, player.hp) + '%';
+            document.getElementById('damage-flash').style.opacity = '0.4';
+            setTimeout(() => document.getElementById('damage-flash').style.opacity = '0', 100);
+            
+            playHurtSound();
+            
+            if (player.hp <= 0) {
+                gameOver();
+            }
+        }
+        
+        function overtimeHell() {
+            let frame = 0;
+            
+            // 清空战场
+            obstacles.forEach(o => scene.remove(o));
+            obstacles = [];
+            
+            gameState.phase = 'gameover';
+            
+            // 黑屏覆盖层
+            const blackScreen = new THREE.Mesh(
+                new THREE.PlaneGeometry(100, 100),
+                new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0 })
+            );
+            blackScreen.position.set(0, 0, -3);
+            camera.add(blackScreen);
+            
+            // 电脑屏幕蓝光
+            const monitorGlow = new THREE.Mesh(
+                new THREE.PlaneGeometry(4, 2.5),
+                new THREE.MeshBasicMaterial({ 
+                    color: 0x2266ff, 
+                    transparent: true, 
+                    opacity: 0 
+                })
+            );
+            monitorGlow.position.set(0, 0, -3);
+            camera.add(monitorGlow);
+            
+            // 屏幕文字闪烁 - 位置上移避免重叠
+            const screenText = document.createElement('div');
+            screenText.style.cssText = `
+                position:fixed;top:38%;left:50%;transform:translate(-50%,-50%);
+                color:#4488ff;font:14px monospace;letter-spacing:1px;z-index:199;
+                opacity:0;transition:opacity 0.5s;
+            `;
+            screenText.innerHTML = 'C:\\work\\project\\final\\final_final\\真的不改了_v3.psd<br><br>> 编译中...<br>> 正在连接服务器...<br>> 同步中...';
+            
+            const ending = setInterval(() => {
+                frame++;
+                
+                // 快速变黑
+                if (frame < 50) {
+                    blackScreen.material.opacity = frame / 50;
+                }
+                
+                // 黑屏后亮起电脑蓝光
+                if (frame === 70) {
+                    document.body.appendChild(screenText);
+                    setTimeout(() => screenText.style.opacity = '0.8', 100);
+                }
+                
+                if (frame > 70 && frame < 140) {
+                    monitorGlow.material.opacity = (frame - 70) / 70 * 0.3;
+                    // 屏幕闪烁
+                    if (frame % 20 === 0) {
+                        screenText.style.opacity = '0.5';
+                        setTimeout(() => screenText.style.opacity = '0.8', 100);
+                    }
+                }
+                
+                // 电脑屏幕后再显示加班文字
+                if (frame === 150) {
+                    const gameOverText = document.createElement('div');
+                    gameOverText.style.cssText = `
+                        position:fixed;top:45%;left:50%;transform:translate(-50%,-50%);
+                        color:#aa2222;font:26px Georgia;letter-spacing:8px;z-index:200;
+                        opacity:0;transition:opacity 2s;
+                    `;
+                    gameOverText.textContent = 'O V E R T I M E';
+                    document.body.appendChild(gameOverText);
+                    setTimeout(() => gameOverText.style.opacity = '1', 100);
+                }
+                
+                if (frame === 230) {
+                    const sub = document.createElement('div');
+                    sub.style.cssText = `
+                        position:fixed;top:55%;left:50%;transform:translate(-50%,-50%);
+                        color:#664444;font:14px Georgia;letter-spacing:2px;z-index:200;
+                        text-align:center;line-height:2;opacity:0;transition:opacity 1.5s;
+                    `;
+                    sub.innerHTML = '加班到天亮...<br>明天也要继续加油哦！';
+                    document.body.appendChild(sub);
+                    setTimeout(() => sub.style.opacity = '1', 100);
+                }
+                
+                if (frame === 350) {
+                    const restart = document.createElement('div');
+                    restart.style.cssText = `
+                        position:fixed;bottom:60px;left:50%;transform:translateX(-50%);
+                        color:#665555;font:11px Georgia;letter-spacing:3px;z-index:200;
+                        cursor:pointer;
+                    `;
+                    restart.textContent = 'TRY AGAIN';
+                    restart.onclick = () => window.location.reload();
+                    document.body.appendChild(restart);
+                }
+                
+                if (frame >= 700) clearInterval(ending);
+            }, 16);
+            
+            // 绝望音效
+            playSound(220, 0.8, 0.06);
+            setTimeout(() => playSound(185, 0.8, 0.06), 200);
+            setTimeout(() => playSound(147, 1.2, 0.06), 400);
+        }
+        
+        function gameOver() {
+            gameState.phase = 'gameover';
+            overtimeHell();
+        }
+        
+        function playIntroAnimation(callback) {
+            let frame = 0;
+            const blackScreen = new THREE.Mesh(
+                new THREE.PlaneGeometry(100, 100),
+                new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true })
+            );
+            blackScreen.position.set(0, 0, -3);
+            camera.add(blackScreen);
+            
+            const intro = setInterval(() => {
+                frame++;
+                
+                if (frame === 30) {
+                    blackScreen.material.opacity = Math.max(0, blackScreen.material.opacity - 0.015);
+                }
+                
+                if (frame === 120) {
+                    clearInterval(intro);
+                    camera.remove(blackScreen);
+                    document.getElementById('controls-hint').style.display = 'block';
+                    callback();
+                }
+            }, 16);
+        }
+        
+        function heavenEnding() {
+            let frame = 0;
+            
+            // 清空场景障碍物
+            obstacles.forEach(o => scene.remove(o));
+            obstacles = [];
+            
+            gameState.phase = 'win';
+            
+            // 云朵
+            const clouds = [];
+            for (let i = 0; i < 15; i++) {
+                const cloud = new THREE.Mesh(
+                    new THREE.SphereGeometry(8 + Math.random() * 12, 8, 8),
+                    new THREE.MeshBasicMaterial({ 
+                        color: 0xffffff, 
+                        transparent: true, 
+                        opacity: 0 
+                    })
+                );
+                cloud.position.set(
+                    (Math.random() - 0.5) * 40,
+                    -10 - i * 5,
+                    player.z - 5 - Math.random() * 10
+                );
+                clouds.push(cloud);
+                scene.add(cloud);
+            }
+            
+            const ending = setInterval(() => {
+                frame++;
+                
+                // 天堂渐亮 - 神圣白光
+                const b = Math.min(1, frame / 180);
+                scene.background = new THREE.Color(b, b, b);
+                scene.fog.far = Math.min(500, scene.fog.far + 1);
+                
+                // 摄像机缓缓升入云端
+                if (frame > 30) {
+                    camera.position.y += 0.05;
+                    player.z = Math.max(player.z - 0.02, -244);
+                }
+                
+                // 云朵渐渐显现
+                clouds.forEach((c, i) => {
+                    c.material.opacity = Math.min(0.85, frame / 150 - i * 0.03);
+                    c.position.y += 0.015;
+                });
+                
+                // 镜头眩光效果
+                if (frame > 80 && frame < 200) {
+                    scene.background.multiplyScalar(1.003);
+                }
+                
+                if (frame === 160) {
+                    const freeText = document.createElement('div');
+                    freeText.style.cssText = `
+                        position:fixed;top:45%;left:50%;transform:translate(-50%,-50%);
+                        color:#444;font:36px Georgia;letter-spacing:14px;z-index:200;
+                        opacity:0;transition:opacity 2.5s;
+                    `;
+                    freeText.textContent = 'F R E E D O M';
+                    document.body.appendChild(freeText);
+                    setTimeout(() => freeText.style.opacity = '1', 100);
+                    
+                    setTimeout(() => {
+                        const sub = document.createElement('div');
+                        sub.style.cssText = `
+                            position:fixed;top:55%;left:50%;transform:translate(-50%,-50%);
+                            color:#777;font:16px Georgia;letter-spacing:3px;z-index:200;
+                            text-align:center;line-height:2;opacity:0;transition:opacity 1.5s;
+                        `;
+                        sub.innerHTML = '下班自由<br>灵魂飞升云端';
+                        document.body.appendChild(sub);
+                        setTimeout(() => sub.style.opacity = '1', 100);
+                        
+                        setTimeout(() => {
+                            const restart = document.createElement('div');
+                            restart.style.cssText = `
+                                position:fixed;bottom:60px;left:50%;transform:translateX(-50%);
+                                color:#888;font:12px Georgia;letter-spacing:4px;z-index:200;
+                                cursor:pointer;opacity:0;transition:opacity 1s;
+                            `;
+                            restart.textContent = 'REINCARNATE';
+                            restart.onclick = () => window.location.reload();
+                            document.body.appendChild(restart);
+                            setTimeout(() => restart.style.opacity = '1', 100);
+                        }, 2500);
+                    }, 1800);
+                }
+                
+                if (frame >= 500) clearInterval(ending);
+            }, 16);
+        }
+        
+        function youWin() {
+            gameState.phase = 'win';
+            playWinChord(); // 舒适的天国和弦
+            
+            // 撒花粒子
+            for (let i = 0; i < 60; i++) {
+                setTimeout(() => {
+                    const p = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.08, 0.08, 0.08),
+                        new THREE.MeshBasicMaterial({ 
+                            color: [0xffffff, 0xffdd00, 0xffaaaa][Math.floor(Math.random() * 3)] 
+                        })
+                    );
+                    p.position.set(
+                        (Math.random() - 0.5) * 3,
+                        2 + Math.random(),
+                        camera.position.z - 2
+                    );
+                    p.vy = -0.01 - Math.random() * 0.02;
+                    scene.add(p);
+                    const fall = setInterval(() => {
+                        p.position.y += p.vy;
+                        p.rotation.x += 0.1;
+                        if (p.position.y < -2) {
+                            clearInterval(fall);
+                            scene.remove(p);
+                        }
+                    }, 16);
+                }, i * 25);
+            }
+            
+            setTimeout(() => heavenEnding(), 3000);
+        }
+        
+        function setupControls() {
+            // 设计师画笔光标跟随鼠标
+            const cursor = document.getElementById('design-cursor');
+            document.addEventListener('mousemove', (e) => {
+                cursor.style.left = e.clientX + 'px';
+                cursor.style.top = e.clientY + 'px';
+                // 轻微抖动增加设计感
+                cursor.style.transform = `translate(-50%, -50%) rotate(${Math.sin(Date.now() * 0.001) * 3}deg)`;
+            });
+            
+            document.addEventListener('keydown', e => keys[e.code] = true);
+            document.addEventListener('keyup', e => keys[e.code] = false);
+            
+            document.addEventListener('click', () => {
+                if (gameState.phase === 'playing') {
+                    playerShoot();
+                }
+                // 点击时光标缩放反馈
+                cursor.style.transform = 'translate(-50%, -50%) scale(0.85)';
+                setTimeout(() => {
+                    cursor.style.transform = 'translate(-50%, -50%)';
+                }, 100);
+            });
+            
+            document.getElementById('start-btn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                document.getElementById('title-screen').style.display = 'none';
+                initAudio();
+                createCutscene(() => {
+                    // 直接无缝开始，删掉多余的黑屏动画！
+                    document.getElementById('controls-hint').style.display = 'block';
+                    gameState.phase = 'playing';
+                    gameState.time = 0;
+                });
+            });
+            
+            document.addEventListener('pointerlockchange', () => {
+                if (gameState.phase === 'menu' && document.pointerLockElement) {
+                    gameState.phase = 'playing';
+                }
+            });
+        }
+        
+        function gameLoop() {
+            requestAnimationFrame(gameLoop);
+            const delta = clock.getDelta();
+            
+            if (gameState.phase === 'playing') {
+                gameState.time += delta;
+                player.shootCD = Math.max(0, player.shootCD - 1);
+                
+                // 30秒出口解锁
+                const timeLeft = Math.max(0, 30 - Math.floor(gameState.time));
+                document.getElementById('timer').textContent = 
+                    timeLeft > 0 ? `ESCAPE IN: ${timeLeft}s` : 'GO TO EXIT!';
+                
+                // 玩家自动向前冲刺 + A/D左右躲避
+                player.z -= player.speed * 0.7;
+                player.z = Math.max(-282, player.z); // 可以穿门进去！
+                if (keys['KeyA'] || keys['ArrowLeft']) {
+                    player.x = Math.max(-2.5, player.x - player.speed); // 缩小活动范围，堵住卡bug位置
+                }
+                if (keys['KeyD'] || keys['ArrowRight']) {
+                    player.x = Math.min(2.5, player.x + player.speed); // 缩小活动范围，堵住卡bug位置
+                }
+                
+                // 相机锁定第一人称向前看
+                camera.position.set(player.x, player.y, player.z);
+                camera.rotation.set(0, 0, 0);
+                
+                // 辞职信信封飞行 + 击毁障碍物
+                bullets.forEach((b, i) => {
+                    b.position.z += b.vz;
+                    b.rotation.z += 0.05; // 信封旋转飞出
+                    b.life--;
+                    
+                    obstacles.forEach((obs, j) => {
+                        const dist = Math.sqrt(
+                            Math.pow(b.position.x - obs.position.x, 2) + 
+                            Math.pow(b.position.z - obs.position.z, 2)
+                        );
+                        if (dist < 1.3) {
+                            scene.remove(b);
+                            bullets.splice(i, 1);
+                            scene.remove(obs);
+                            obstacles.splice(j, 1);
+                            gameState.score += 50;
+                            document.getElementById('score').textContent = 
+                                `SCORE: ${gameState.score}`;
+                            playExplosionSound();
+                        }
+                    });
+                    
+                    if (b.life <= 0) {
+                        scene.remove(b);
+                        bullets.splice(i, 1);
+                    }
+                });
+                
+                // 📂 广告弹窗飞过来 (只挡视线无伤害)
+                popups.forEach((p, i) => {
+                    p.position.z += p.vz;
+                    p.rotation.z += 0.02;
+                    p.life--;
+                    if (p.life <= 0 || p.position.z > player.z + 5) {
+                        scene.remove(p);
+                        popups.splice(i, 1);
+                    }
+                });
+                
+
+                
+                // 30秒天堂白光之门
+                if (gameState.time >= 30 && !window.portalGate.spawned) {
+                    window.portalGate.frame.visible = true;
+                    let portalFrame = 0;
+                    const fadeIn = setInterval(() => {
+                        portalFrame++;
+                        window.portalGate.frame.material.emissiveIntensity = Math.min(1.2, portalFrame / 80);
+                        window.portalGate.portal.material.opacity = Math.min(1, portalFrame / 60);
+                        window.portalGate.core.material.opacity = Math.min(0.9, portalFrame / 100);
+                        window.portalGate.core.scale.setScalar(1 + portalFrame / 200 * Math.sin(Date.now() * 0.005));
+                        window.portalGate.light.intensity = Math.min(8, portalFrame / 20);
+                        if (portalFrame >= 180) clearInterval(fadeIn);
+                    }, 16);
+                    window.portalGate.spawned = true;
+                }
+                
+                // 必须真正穿过发光的门！
+                if (window.portalGate.spawned && player.z < -279.5 && gameState.phase === 'playing') {
+                    gameState.phase = 'win';
+                    
+                    // ┌─────────────────────────────────────────┐
+                    // │     ✨ 通关动画 - 精确帧控制器 ✨        │
+                    // └─────────────────────────────────────────┘
+                    
+                    // 升天！公文包留在凡间，灵魂轻装上阵！
+                    camera.children.forEach(child => {
+                        if (child.type === 'Group') {
+                            camera.remove(child);
+                        }
+                    });
+                    
+                    // 第0秒：穿门，白屏撒花
+                    const whiteScreen = new THREE.Mesh(
+                        new THREE.PlaneGeometry(100, 100),
+                        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 })
+                    );
+                    whiteScreen.position.set(0, 0, -3);
+                    camera.add(whiteScreen);
+                    
+                    // 撒花粒子
+                    const particles = [];
+                    for (let i = 0; i < 80; i++) {
+                        const p = new THREE.Mesh(
+                            new THREE.BoxGeometry(0.08, 0.08, 0.08),
+                            new THREE.MeshBasicMaterial({ 
+                                color: [0xffeeee, 0xeeffee, 0xeeeeff, 0xffffee][i % 4] 
+                            })
+                        );
+                        p.position.set((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 3, -2 - Math.random());
+                        p.vx = (Math.random() - 0.5) * 0.08;
+                        p.vy = Math.random() * 0.06 + 0.02;
+                        p.vz = (Math.random() - 0.5) * 0.03;
+                        particles.push(p);
+                        camera.add(p);
+                    }
+                    
+                    // 胜利四音和弦
+                    playSound(523, 0.5, 0.12);
+                    setTimeout(() => playSound(659, 0.5, 0.12), 120);
+                    setTimeout(() => playSound(784, 0.5, 0.12), 240);
+                    setTimeout(() => playSound(1047, 0.8, 0.12), 360);
+                    
+                    let frame = 0;
+                    let cameraRotX = 0; // 镜头俯仰角度平滑缓存
+                    
+                    const anim = setInterval(() => {
+                        frame++;
+                        
+                        // 第0-25帧：白屏闪一下，然后渐渐透明露出飞升场景
+                        if (frame < 25) {
+                            whiteScreen.material.opacity = frame / 25;
+                        } else if (frame < 80) {
+                            // 25帧后白屏渐渐淡出，露出镜头动画！
+                            whiteScreen.material.opacity = 1 - (frame - 25) / 55;
+                        }
+                        
+                        // 撒花持续飞舞
+                        particles.forEach(p => {
+                            p.position.x += p.vx;
+                            p.position.y += p.vy;
+                            p.position.z += p.vz;
+                            p.rotation.x += 0.1;
+                            p.rotation.y += 0.15;
+                        });
+                        
+                        // ═══════════════════════════════════════
+                        //  第40帧开始：镜头慢慢向上抬起
+                        //  视线从平视 → 45°俯视
+                        //  平滑插值过渡，完全没有生硬感
+                        //  高度缓缓上升，离公司越来越远
+                        // ═══════════════════════════════════════
+                        if (frame >= 40) {
+                            // 高度缓缓上升
+                            camera.position.y += 0.04;
+                            camera.position.z -= 0.015;
+                            
+                            // 平滑插值：从平视0° → 45°俯视
+                            const targetAngle = Math.min(0.785, (frame - 40) / 160 * 0.785);
+                            cameraRotX = cameraRotX * 0.95 + targetAngle * 0.05; // 5% 渐进插值
+                            camera.rotation.x = cameraRotX;
+                        }
+                        
+                        // ═══════════════════════════════════════
+                        //  第40帧开始：整个世界渐渐变成纯白天堂
+                        //  从第40帧就开始变白，保持纯白色背景
+                        // ═══════════════════════════════════════
+                        if (frame >= 40) {
+                            // 线性渐变：从办公室灰色 → 纯白色
+                            const whiteness = Math.min(1, (frame - 40) / 120);
+                            scene.background = new THREE.Color(whiteness, whiteness, whiteness);
+                            scene.fog.color = new THREE.Color(whiteness, whiteness, whiteness);
+                        }
+                        
+                        // 第160帧后：完全纯白，远处虚化
+                        if (frame >= 160) {
+                            scene.background = new THREE.Color(0xffffff);
+                            scene.fog.color = new THREE.Color(0xffffff);
+                            scene.fog.far = Math.max(10, scene.fog.far - 0.1);
+                        }
+                        
+                        // FREEDOM 解放文字 - 白色背景黑色文字
+                        if (frame === 160) {
+                            const freeText = document.createElement('div');
+                            freeText.style.cssText = `
+                                position:fixed;top:45%;left:50%;transform:translate(-50%,-50%);
+                                color:#111;font:36px Georgia;letter-spacing:14px;z-index:200;
+                                opacity:0;transition:opacity 2.5s;
+                            `;
+                            freeText.textContent = 'F R E E D O M';
+                            document.body.appendChild(freeText);
+                            setTimeout(() => freeText.style.opacity = '1', 50);
+                            
+                            setTimeout(() => {
+                                const sub = document.createElement('div');
+                                sub.style.cssText = `
+                                    position:fixed;top:55%;left:50%;transform:translate(-50%,-50%);
+                                    color:#444;font:16px Georgia;letter-spacing:3px;z-index:200;
+                                    text-align:center;line-height:2;opacity:0;transition:opacity 1.5s;
+                                `;
+                                sub.innerHTML = '下班自由<br>灵魂飞升云端';
+                                document.body.appendChild(sub);
+                                setTimeout(() => sub.style.opacity = '1', 50);
+                                
+                                setTimeout(() => {
+                                    const restart = document.createElement('div');
+                                    restart.style.cssText = `
+                                        position:fixed;bottom:60px;left:50%;transform:translateX(-50%);
+                                        color:#555;font:12px Georgia;letter-spacing:4px;z-index:200;
+                                        cursor:pointer;
+                                    `;
+                                    restart.textContent = 'REINCARNATE';
+                                    restart.onclick = () => window.location.reload();
+                                    document.body.appendChild(restart);
+                                }, 2500);
+                            }, 1800);
+                        }
+                        
+                        if (frame >= 800) clearInterval(anim);
+                    }, 16);
+                }
+                
+                // 生成障碍物 (密度提升30%)
+                if (Math.random() < 0.021) spawnObstacle();
+                
+                // 障碍物飞过来 + 特殊行为
+                obstacles.forEach((obs, i) => {
+                    obs.position.z += 0.25;
+                    
+                    // ⏰ 时钟：疯狂旋转指针
+                    if (obs.type === 'clock' && obs.clockHands) {
+                        obs.clockHands[0].rotation.z += 0.15;
+                        obs.clockHands[1].rotation.z += 0.08;
+                    }
+                    
+                    // 📂 狂暴邮件夹：疯狂自转 + 一次喷3个广告！
+                    if (obs.type === 'spamFolder') {
+                        obs.rotation.y += 0.18;
+                        obs.spamCD--;
+                        if (obs.spamCD <= 0) {
+                            for (let i = 0; i < 3; i++) {
+                                setTimeout(() => spawnAdPopup(obs.position), i * 40);
+                            }
+                            obs.spamCD = 18;
+                        }
+                    }
+                    
+                    // 📈 KPI曲线图：曲线点疯狂跳动
+                    if (obs.type === 'review') {
+                        obs.children.forEach((dot, idx) => {
+                            if (idx > 0 && idx < 11) { // 曲线点疯狂跳动
+                                dot.position.y += (Math.random() - 0.48) * 0.015;
+                            }
+                        });
+                        obs.rotation.y += 0.03;
+                    }
+                    
+                    // 会议邮件：摇摆飘动
+                    if (obs.type === 'meeting') {
+                        obs.rotation.y += 0.04;
+                        obs.position.y = 1.4 + Math.sin(Date.now() * 0.003 + i * 1.5) * 0.35;
+                        obs.position.x += Math.sin(Date.now() * 0.0015 + i) * 0.015;
+                    }
+                    
+                    if (obs.type === 'chat') {
+                        obs.position.y = 1.8 + Math.sin(Date.now() * 0.006) * 0.25;
+                    }
+                    
+                    // 碰撞伤害
+                    const dist = Math.sqrt(
+                        Math.pow(obs.position.x - player.x, 2) + 
+                        Math.pow(obs.position.z - player.z, 2)
+                    );
+                    if (dist < 1.3 && ['chat', 'review', 'meeting', 'clock', 'spamFolder'].includes(obs.type)) {
+                        // ⏰ DDL红色时钟 = 一碰即死！立刻死亡！
+                        if (obs.type === 'clock') {
+                            scene.remove(obs);
+                            obstacles.splice(i, 1);
+                            gameOver();
+                        } else {
+                            playerTakeDamage();
+                            scene.remove(obs);
+                            obstacles.splice(i, 1);
+                        }
+                    }
+                    
+                    if (obs.position.z > player.z + 5) {
+                        scene.remove(obs);
+                        obstacles.splice(i, 1);
+                    }
+                });
+            }
+            
+            renderer.render(scene, camera);
+        }
+        
+        init3D();
+        setupControls();
+        gameLoop();
+    </script>
+</body>
+</html>
